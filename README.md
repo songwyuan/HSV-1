@@ -14,7 +14,7 @@ done
 ```
 
 ##  download_GSE237079(GSE236646)
-
+```
 #!/bin/bash
 set -euo pipefail
 #设置环境变量
@@ -123,7 +123,7 @@ echo "Total samples processed: ${#ALL_SRR[@]}" \
     | tee -a "${BASE_DIR}/logs/summary.log"
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] ALL DONE"
-
+```
 
 
 
