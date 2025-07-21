@@ -1,7 +1,7 @@
 # HSV-1
 
 ## 目录准备
-
+、、、
 #创建主病毒目录结构（如果尚不存在）
 
 mkdir -p /mnt/alamo01/users/yuansongwei7/download_dna/HSV-1
@@ -11,7 +11,7 @@ mkdir -p /mnt/alamo01/users/yuansongwei7/download_dna/HSV-1
 for gse in GSE237079,GSE236646; do
     mkdir -p /mnt/alamo01/users/yuansongwei7/download_dna/HSV-1/${gse}/{scripts,raw_sra,fastq_files,fastqc_results,cleaned_data,alignment_results,analysis_results,logs}
 done
-
+、、、
 
 ##  download_GSE237079(GSE236646)
 
