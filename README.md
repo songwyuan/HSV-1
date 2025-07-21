@@ -1,6 +1,7 @@
 # HSV-1
 
 ## 目录准备
+
 #创建主病毒目录结构（如果尚不存在）
 mkdir -p /mnt/alamo01/users/yuansongwei7/download_dna/HSV-1
 
@@ -11,15 +12,16 @@ done
 
 
 ##  download_GSE237079(GSE236646)
+
   #!/bin/bash
 set -euo pipefail
-
 #设置环境变量
 export PATH="/mnt/alamo01/users/chenyun730/micromamba/envs/sra-tools/bin:$PATH"
 BASE_DIR="/mnt/alamo01/users/yuansongwei7/download_dna/HSV-1/GSE236646"
 mkdir -p "${BASE_DIR}"/{raw_sra,fastq_files,fastqc_results,logs}
 
 #样本列表（按实验条件分组）
+
 MOI_0001=(
     SRR25181599 SRR25181600 SRR25181601  # Day3
     SRR25181588 SRR25181589 SRR25181590  # Day5
