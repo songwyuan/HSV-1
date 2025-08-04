@@ -126,7 +126,127 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] ALL DONE"
 ```
 
 
-## 
+## pinepline.sh(paired_single)
+#paired
+```
+#!/bin/bash
+
+########################################
+# RNA-seq 自动流程（适用于多目录 PE 数据）
+# 作者: ChatGPT + Yuansongwei7
+########################################
+
+# -------- 参数设置 --------
+RAW_DIR="/mnt/alamo01/users/yuansongwei7/download_dna/HSV-1"  # 原始数据根目录（递归）
+WORK_DIR="/mnt/alamo01/users/yuansongwei7/download_dna/HSV-1_pipeline_output"
+CLEAN_DIR="$WORK_DIR/clean_reads"
+ALIGN_DIR="$WORK_DIR/alignment"
+QC_DIR="$WORK_DIR/qc"
+combine_symbol_counts="/mnt/alamo01/projects/Group_Wang/script/function/combine_symbol_counts_STAR.R"
+
+Species="Homo sapiens"
+REF="/mnt/alamo01/users/yuansongwei7/genome_index/hg38/star_index"
+GTF="/mnt/alamo01/users/yuansongwei7/genome_index/hg38/gencode.v43.annotation.gtf"
+
+THREADS=64
+featurecount_thread=32
+FASTP_THREADS=64
+use_R="/mnt/alamo01/users/chenyun730/micromamba/envs/R441/bin/Rscript"
+
+# -------- 创建目录 --------
+mkdir -p $WORK_DIR $QC_DIR $CLEAN_DIR $ALIGN_DIR
+
+# -------- Step 1: 查找所有样本 --------
+echo "🔍 正在查找所有双端 FASTQ 文件..."
+find $RAW_DIR -type f -name "*_1.fastq.gz" | while read F1; do
+    F2=${F1/_1.fastq.gz/_2.fastq.gz}
+    if [ ! -f "$F2" ]; then
+        echo "⚠️ 缺失配对文件: $F2，跳过！"
+        continue
+    fi
+
+    SAMPLE=$(basename "$F1")
+    SAMPLE=${SAMPLE%%_1.fastq.gz}
+
+    echo "🎯 处理样本: $SAMPLE"
+
+    # ---- Step 1: Fastp 清洗 ----
+    CLEAN_R1="$CLEAN_DIR/${SAMPLE}_clean_R1.fq.gz"
+    CLEAN_R2="$CLEAN_DIR/${SAMPLE}_clean_R2.fq.gz"
+    DONE_FLAG="$CLEAN_DIR/${SAMPLE}.done"
+
+    if [ -f "$DONE_FLAG" ]; then
+        echo "⏩ [$SAMPLE] 已清洗，跳过"
+    else
+        echo "🧼 正在清洗 [$SAMPLE] ..."
+        fastp -i "$F1" -I "$F2" -o "$CLEAN_R1" -O "$CLEAN_R2" \
+            --detect_adapter_for_pe -q 25 -u 20 -e 20 -r -W 5 -M 30 \
+            --length_required 50 -h "$CLEAN_DIR/${SAMPLE}.html" \
+            -j "$CLEAN_DIR/${SAMPLE}.json" -w $FASTP_THREADS > "$CLEAN_DIR/${SAMPLE}_fastp.log" 2>&1
+
+        if [ $? -eq 0 ]; then
+            touch "$DONE_FLAG"
+            echo "✅ [$SAMPLE] fastp 完成"
+        else
+            echo "❌ [$SAMPLE] fastp 失败" | tee "$CLEAN_DIR/${SAMPLE}.error"
+            continue
+        fi
+    fi
+
+    # ---- Step 2: 比对 ----
+    ALIGN_SAMPLE_DIR="$ALIGN_DIR/$SAMPLE"
+    mkdir -p "$ALIGN_SAMPLE_DIR"
+    cd "$ALIGN_SAMPLE_DIR"
+
+    ALIGN_DONE="$ALIGN_SAMPLE_DIR/${SAMPLE}.done"
+    if [ -f "$ALIGN_DONE" ]; then
+        echo "⏩ [$SAMPLE] 已比对，跳过"
+        continue
+    fi
+
+    echo "🧬 [$SAMPLE] STAR 比对中..."
+    STAR --runThreadN $THREADS \
+        --genomeDir $REF \
+        --readFilesIn "$CLEAN_R1" "$CLEAN_R2" \
+        --readFilesCommand zcat \
+        --outFileNamePrefix "${SAMPLE}_" \
+        --outSAMtype BAM SortedByCoordinate \
+        --outSAMattributes NH HI AS nM NM MD \
+        --outFilterMultimapNmax 10 --outFilterMismatchNmax 5 \
+        --outFilterScoreMinOverLread 0.8 \
+        --alignIntronMin 20 --alignIntronMax 1000000 \
+        --alignMatesGapMax 1000000 \
+        --alignSJoverhangMin 8 --alignSJDBoverhangMin 1 \
+        --sjdbScore 1 --twopassMode Basic \
+        --twopass1readsN -1 --quantMode GeneCounts > star.log 2>&1
+
+    if [ $? -eq 0 ]; then
+        echo "✅ [$SAMPLE] STAR 比对完成"
+        # ---- Step 3: featureCounts 定量 ----
+        featureCounts -T $featurecount_thread -a $GTF \
+            -o "${SAMPLE}_gene_counts.txt" "${SAMPLE}_Aligned.sortedByCoord.out.bam" > featurecounts.log 2>&1
+        echo "✅ [$SAMPLE] featureCounts 完成"
+        touch "$ALIGN_DONE"
+    else
+        echo "❌ [$SAMPLE] STAR 比对失败" | tee "${SAMPLE}.error"
+        continue
+    fi
+
+    cd - > /dev/null
+done
+
+# -------- Step 4: 整合表达矩阵 --------
+echo "📊 汇总所有基因表达矩阵..."
+cd "$ALIGN_DIR"
+$use_R $combine_symbol_counts "$ALIGN_DIR" "$Species" "$GTF"
+echo "✅ 表达矩阵整合完成"
+
+echo "🎉 全部分析流程结束！"
+
+(rnaseq) yuansongwei7@mgt01:/mnt/alamo01/users/yuansongwei7/download_dna/HSV-1/RAW264.7/GSE204893
+$
+
+```
 
 
 
