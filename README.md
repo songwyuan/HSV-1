@@ -398,6 +398,136 @@ echo "✅ gene symbol 聚合完成！"
 echo "🎉 所有样本流程完成！"
 
 ```
+
+#combine_symbol_counts.R
+
+```
+#!/usr/bin/env Rscript
+
+suppressMessages(library(dplyr))
+suppressMessages(library(biomaRt))
+suppressMessages(library(GenomicFeatures))
+suppressMessages(library(txdbmaker))
+
+# 获取命令行参数（去掉 Rscript 路径本身）
+args <- commandArgs(trailingOnly = TRUE)
+
+if (length(args) < 2) {
+  stop("❌ 请输入 alignment与物种信息 两个参数")
+}
+
+align_path <- args[1]
+species = args[2]
+gtf_path = args[3]
+
+if(species == "Homo sapiens") {
+  ensembl = useMart("ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl")
+  symbol = "hgnc_symbol"
+}else if(species == "Mus musculus"){
+  ensembl = useMart("ENSEMBL_MART_ENSEMBL", dataset = "mmusculus_gene_ensembl")
+  symbol = "mgi_symbol"
+}
+
+# 获取所有featureCounts输出文件的路径
+files <- list.files(pattern = "gene_counts.txt$",path = align_path,recursive = T)
+
+# 初始化一个空的数据框，用于存储基因计数矩阵
+gene_counts <- data.frame()
+
+# 遍历每个文件，读取数据并合并
+for (file in files) {
+  # 读取每个featureCounts的输出文件
+  count_data <- read.table(file, header = TRUE, sep = "\t", comment.char = "#",check.names = F)
+  
+  # 提取Gene ID和计数列，确保计数列名称为"Count"
+  count_data_subset <- count_data[, c(1,7)]
+  
+  # 将Gene ID列作为行名
+  rownames(count_data_subset) <- count_data_subset$Geneid
+  
+  # 删除Geneid列，因为它已经作为行名
+  count_data_subset$Geneid <- NULL
+  
+  # 获取样本名称作为列名
+  sample_name <- strsplit(file,"\\/")[[1]][1]  # 从文件名中提取样本名称
+  
+  # 合并数据
+  if (ncol(gene_counts) == 0) {
+    # 如果是第一次合并，直接将数据放入gene_counts
+    gene_counts <- count_data_subset
+    colnames(gene_counts) <- sample_name
+  } else {
+    # 否则，将当前样本的计数数据添加到gene_counts矩阵中
+    gene_counts <- cbind(gene_counts, count_data_subset)
+    colnames(gene_counts)[ncol(gene_counts)] <- sample_name
+  }
+}
+
+# 保存合并后的基因表达矩阵
+write.csv(gene_counts, "transcript_count_matrix.csv", quote = FALSE, row.names = TRUE)
+
+# 使用biomaRt查询Gene Symbol
+gene_symbols <- getBM(attributes = c('ensembl_gene_id', symbol),
+                      filters = 'ensembl_gene_id',
+                      values = rownames(gene_counts),
+                      mart = ensembl)
+colnames(gene_symbols)[2] <- "symbol"
+
+# 将Gene Symbol合并到基因计数矩阵中
+gene_counts$GeneSymbol <- gene_symbols[,2][match(rownames(gene_counts), gene_symbols$ensembl_gene_id)]
+
+# 聚合 & 清理
+gene_counts <- gene_counts[-which(gene_counts$GeneSymbol == ""),]
+gene_counts <- na.omit(gene_counts)
+gene_matrix <- gene_counts %>%
+  group_by(GeneSymbol) %>%
+  summarise(across(where(is.numeric), sum)) %>%
+  as.data.frame()
+
+rownames(gene_matrix) <- gene_matrix$GeneSymbol
+gene_matrix <- gene_matrix[, -1]
+
+# 输出
+write.csv(gene_matrix, "gene_count_matrix_symbol_merged.csv", quote = FALSE)
+cat("✅ Symbol Count聚合完成，输出文件：", paste(align_path,"gene_count_matrix_symbol_merged.csv",sep = "/"), "\n")
+
+####
+
+# 1. 建立TxDb对象，GTF文件路径根据你实际位置修改
+txdb <- makeTxDbFromGFF(gtf_path, format="gtf")
+
+# 2. 提取基因的外显子区
+exonsByGene <- exonsBy(txdb, by="gene")
+
+# 3. 计算每个基因外显子的宽度总和（合并重叠）
+gene_lengths <- sum(width(reduce(exonsByGene)))
+
+# 4. 转成数据框，gene_id 和 length
+gene_length_df <- data.frame(
+  ensembl = names(gene_lengths),
+  length = as.numeric(gene_lengths)
+)
+
+gene_length_df <- left_join(gene_length_df, gene_symbols, by = c("ensembl" = "ensembl_gene_id")) %>%
+  filter(symbol != "") %>%  # 去除没有 symbol 的
+  group_by(symbol) %>%
+  summarise(symbol_length = mean(length))
+
+symbol_lengths <- gene_length_df$symbol_length
+names(symbol_lengths) <- gene_length_df$symbol
+
+use_gene <- intersect(gene_length_df$symbol,rownames(gene_matrix))
+
+rpk <- sweep(gene_matrix[use_gene,], 1, symbol_lengths[use_gene] / 1000, "/")
+
+tpm <- sweep(rpk, 2, colSums(rpk), "/") * 1e6
+
+# 输出
+write.csv(tpm, "gene_tpm_matrix_symbol_merged.csv", quote = FALSE)
+cat("✅ Symbol TPM聚合完成，输出文件：", paste(align_path,"gene_tpm_matrix_symbol_merged.csv",sep = "/"), "\n")
+
+```
+
 # extractjson
 ```
 #!/bin/env Rscript
