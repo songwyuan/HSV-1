@@ -1,0 +1,64 @@
+## 合并
+qsub -cwd -V -l cpu=96:mem=64G -q fast -N star_index constract_star_index.sh
+
+#!/bin/bash
+set -euo pipefail
+
+# 1. 环境配置 (请根据你的实际 conda 环境路径调整)
+export PATH="/mnt/alamo01/users/chenyun730/micromamba/envs/sra-tools/bin:$PATH"
+
+# 2. 路径定义
+RAW_DATA_ROOT="/mnt/alamo01/users/yuansongwei7/IDE8-ARG--LGTV_SFTSV/FJLBFC20260490-01/FJLBFC20260490-01"
+BASE_DIR="/mnt/alamo01/users/yuansongwei7/IDE8-ARG--LGTV_SFTSV/FJLBFC20260490-01/FJLBFC20260490-01/analysis"
+
+mkdir -p "${BASE_DIR}"/{fastqc_results,logs}
+
+# 3. 自动搜寻所有 fastq.gz 文件 (排除 QCFILE 目录)
+echo "Scanning for fastq files..."
+ALL_FILES=$(find "${RAW_DATA_ROOT}" -name "*.fastq.gz" | grep -v "QCFILE")
+SAMPLE_PREFIXES=$(echo "$ALL_FILES" | sed 's/\.R[12]\.fastq\.gz//' | sort | uniq)
+
+# 4. 质控处理函数
+process_qc() {
+    local prefix="$1"
+    local filename=$(basename "$prefix")
+    local dirname=$(basename $(dirname "$prefix"))
+    # 使用 目录名+文件名 作为唯一 ID，防止补测样本重名覆盖
+    local sample_id="${dirname}_${filename}" 
+    local log_file="${BASE_DIR}/logs/${sample_id}_qc.log"
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] START: ${sample_id}" | tee -a "${log_file}"
+
+    fastqc -t 2 \
+        "${prefix}.R1.fastq.gz" \
+        "${prefix}.R2.fastq.gz" \
+        -o "${BASE_DIR}/fastqc_results" \
+        >> "${log_file}" 2>&1
+}
+
+# 5. 并行执行 (控制同时运行 6 个任务)
+MAX_JOBS=6
+for prefix in $SAMPLE_PREFIXES; do
+    while [ $(jobs -r | wc -l) -ge $MAX_JOBS ]; do
+        sleep 5
+    done
+    process_qc "$prefix" &
+done
+
+wait
+
+# 6. MultiQC 汇总
+echo "Generating MultiQC report..."
+multiqc "${BASE_DIR}/fastqc_results" -o "${BASE_DIR}/fastqc_results" --name "IDE8-ARG_QC_Summary"
+
+echo "ALL DONE! Results at: ${BASE_DIR}/fastqc_results/IDE8-ARG_QC_Summary.html"
+
+
+
+## 构建 蜱虫+病毒 混合索引
+STAR --runMode genomeGenerate \
+     --runThreadN 12 \
+     --genomeDir ./tick_virus_star_idx \
+     --genomeFastaFiles tick_genome.fasta lgtv.fasta sftsv.fasta \
+     --sjdbGTFfile tick_annotation.gtf \
+     --sjdbOverhang 149  # 测序读长(150bp)减1
