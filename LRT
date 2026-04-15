@@ -92,3 +92,96 @@ if(length(ultimate_genes) == 0) {
   cat(sprintf("\n🎉 成功提纯！在【最严苛的 AND 逻辑】下，找到了 %d 个绝世罕见的超级核心靶标！\n", length(ultimate_genes)))
 }
 ```
+## 结果可视化与族群分析 (Visualization & Clustering)
+#cat 22_Collective_Cluster_Log2FC.R
+```
+#!/usr/bin/env Rscript
+library(DESeq2)
+library(tidyverse)
+library(ggprism)
+
+setwd("/mnt/alamo01/users/yuansongwei7/IDE8-ARG--LGTV_SFTSV/FJLBFC20260490-01/FJLBFC20260490-01/analysis/Strategy4_Mine")
+
+cat("🔄 1. 加载 LRT 模型与 VST 聚类数据...\n")
+# 读取严格聚类的模型和名单 (上一轮跑出的结果)
+dds_lrt <- readRDS("dds_lrt_final_strict.rds")
+cluster_info <- read.csv("Strict_VST_Clusters_Fixed4.csv")
+genes <- cluster_info$Gene
+
+# 提取标准化 Counts
+norm_counts <- counts(dds_lrt, normalized=TRUE)[genes, ]
+meta <- as.data.frame(colData(dds_lrt))
+meta$Group <- paste(meta$Genotype, meta$Treatment, sep="_")
+
+cat("🧮 2. 计算每个基因在各组的均值 (1 个基因 = 1 个点)...\n")
+# 对每个基因的 3 个重复取平均值
+group_means <- t(apply(norm_counts, 1, function(row) {
+  tapply(row, meta$Group, mean)
+}))
+
+cat("📏 3. 计算相对于 Arg+ Mock 的 Log2 Fold Change...\n")
+# 转换为 Log2 尺度 (加1防报错)
+log2_means <- log2(group_means + 1)
+
+# 将 Arg_plus_mock 设为所有基因的绝对基准线 (0)
+baseline <- log2_means[, "Arg_plus_mock"]
+log2fc_mat <- log2_means - baseline
+
+cat("🎨 4. 正在组装数据并绘制族群集体箱线图...\n")
+# 转换格式适配 ggplot
+plot_df <- as.data.frame(log2fc_mat) %>%
+  rownames_to_column("Gene") %>%
+  left_join(cluster_info, by="Gene") %>%
+  pivot_longer(cols = -c(Gene, Cluster), names_to = "Group", values_to = "Log2FC") %>%
+  mutate(
+    Genotype = ifelse(grepl("Arg_plus", Group), "Arg+", "Arg-"),
+    Treatment = gsub("Arg_plus_|Arg_minus_", "", Group)
+  )
+
+# 固定因子顺序
+plot_df$Treatment <- factor(plot_df$Treatment, levels=c("mock", "LGTV", "SFTSV"))
+plot_df$Genotype <- factor(plot_df$Genotype, levels=c("Arg+", "Arg-"))
+
+# 绘图参数
+dodge_width <- 0.7
+
+p <- ggplot(plot_df, aes(x = Treatment, y = Log2FC, color = Genotype, fill = Genotype)) +
+  # 按聚类分面
+  facet_wrap(~ Cluster, scales = "free_y", ncol = 2) +
+
+  # 添加一条 y=0 的绝对基准线 (代表 Arg+ Mock 的水平)
+  geom_hline(yintercept = 0, linetype="dashed", color="gray50", linewidth=0.8) +
+
+  # 族群箱线图 (半透明)
+  geom_boxplot(alpha = 0.2, outlier.shape = NA, position = position_dodge(dodge_width), width=0.5) +
+
+  # 核心：展示基因散点 (1 个点 = 1 个基因的组均值)
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.15, dodge.width = dodge_width),
+              size = 1.8, alpha = 0.8, shape = 21, color = "white", stroke = 0.5) +
+
+  # 绘制族群均值的趋势连线 (展示 Arg对曲线的影响)
+  stat_summary(fun = mean, geom = "line", aes(group = Genotype, linetype = Genotype),
+               position = position_dodge(dodge_width), linewidth = 1.2) +
+  # 绘制均值节点
+  stat_summary(fun = mean, geom = "point", position = position_dodge(dodge_width), size = 3.5) +
+
+  # 颜色方案
+  scale_color_manual(values = c("Arg+" = "#1F78B4", "Arg-" = "#E31A1C")) +
+  scale_fill_manual(values = c("Arg+" = "#1F78B4", "Arg-" = "#E31A1C")) +
+
+  # 样式设置
+  theme_prism(base_size = 14) +
+  labs(title = "Collective Gene Patterns by Cluster",
+       subtitle = "1 Point = 1 Gene. Y-axis: Log2 Fold Change relative to Arg+ Mock (Baseline = 0)",
+       x = "Viral Infection Status",
+       y = "Log2 Fold Change") +
+  theme(legend.position = "bottom",
+        strip.text = element_text(size = 13, face = "bold"))
+
+# 保存输出
+pdf("Collective_Cluster_Log2FC_Profiles.pdf", width=11, height=8)
+print(p)
+dev.off()
+
+cat("✅ 宏观族群图表生成完毕！请查看：Collective_Cluster_Log2FC_Profiles.pdf\n")
+```
