@@ -1,3 +1,127 @@
+## QC
+# 1_fastp_qc.sh
+```
+$ cat 
+#!/bin/bash
+#PBS -N fastp_qc
+#PBS -q batch
+#PBS -l nodes=1:ppn=24
+#PBS -l mem=50gb
+#PBS -V
+#PBS -o logs/fastp.out
+#PBS -e logs/fastp.err
+
+set -euo pipefail
+
+# ⚠️ 注意：因为有了 #PBS -V，我们直接删掉了那些找环境的代码，计算节点会直接使用你现在的 rnaseq 环境！
+
+# 1. 路径定义
+BASE_DIR="/mnt/alamo01/users/yuansongwei7/IDE8-ARG--LGTV_SFTSV/FJLBFC20260490-01/FJLBFC20260490-01/analysis"
+RAW_DATA_DIR="${BASE_DIR}/01_merged_data"
+CLEAN_DIR="${BASE_DIR}/02_clean_data"
+
+mkdir -p "${CLEAN_DIR}" "${BASE_DIR}/logs" "${BASE_DIR}/fastp_reports"
+
+# 2. 处理函数
+process_fastp() {
+    local r1_file="$1"
+    local r2_file="${r1_file/.R1./.R2.}"
+    local prefix=$(echo "$r1_file" | sed 's/\.R1\.fastq\.gz//')
+    local log_file="${BASE_DIR}/logs/${prefix}_fastp.log"
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] START fastp: ${prefix}" | tee -a "${log_file}"
+
+    fastp -w 4 \
+        -i "${RAW_DATA_DIR}/${r1_file}" -I "${RAW_DATA_DIR}/${r2_file}" \
+        -o "${CLEAN_DIR}/${prefix}_clean_R1.fastq.gz" \
+        -O "${CLEAN_DIR}/${prefix}_clean_R2.fastq.gz" \
+        -h "${BASE_DIR}/fastp_reports/${prefix}_fastp.html" \
+        -j "${BASE_DIR}/fastp_reports/${prefix}_fastp.json" \
+        >> "${log_file}" 2>&1
+}
+
+# 3. 循环处理
+cd "${RAW_DATA_DIR}"
+echo "找到以下 R1 文件："
+ls *.R1.fastq.gz
+
+MAX_JOBS=6
+for r1 in *.R1.fastq.gz; do
+    while [ $(jobs -r | wc -l) -ge $MAX_JOBS ]; do
+        sleep 5
+    done
+    process_fastp "$r1" &
+done
+
+wait
+
+# 4. 汇总
+echo "Generating MultiQC report..."
+multiqc "${BASE_DIR}/fastp_reports" -n "IDE8-ARG_Fastp_Summary" -o "${BASE_DIR}/fastp_reports"
+
+echo "🎉 ALL DONE!"
+(rnaseq) yuansongwei7@mgt01:/mnt/alamo01/users/yuansongwei7/IDE8-ARG--LGTV_SFTSV/FJLBFC20260490-01/FJLB
+```
+## Star
+```
+#!/bin/bash
+#PBS -N STAR_Host_Mapping
+#PBS -q batch
+#PBS -l nodes=1:ppn=32
+#PBS -l mem=100gb
+#PBS -V
+#PBS -o logs/mapping.out
+#PBS -e logs/mapping.err
+
+set -e
+
+# 1. 路径定义
+BASE_DIR="/mnt/alamo01/users/yuansongwei7/IDE8-ARG--LGTV_SFTSV/FJLBFC20260490-01/FJLBFC20260490-01/analysis"
+DATA_DIR="${BASE_DIR}/02_clean_data"
+REF_DIR="${BASE_DIR}/reference"
+INDEX_DIR="${REF_DIR}/star_idx_host_only"
+OUT_DIR="${BASE_DIR}/03_alignment"
+MATRIX_DIR="${BASE_DIR}/04_counts"
+
+mkdir -p ${OUT_DIR} ${MATRIX_DIR}
+
+# 2. 建立索引 (如果你之前建好了，它会自动跳过)
+if [ ! -f ${INDEX_DIR}/Genome ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Host Index Construction..."
+    STAR --runMode genomeGenerate --runThreadN 32 --genomeDir ${INDEX_DIR} \
+         --genomeFastaFiles ${REF_DIR}/tick_genome.fa \
+         --sjdbGTFfile ${REF_DIR}/tick_annotation.gtf \
+         --sjdbOverhang 149
+fi
+
+# 3. 批量比对
+cd ${DATA_DIR}
+SAMPLES=$(ls *_clean_R1.fastq.gz | sed 's/_clean_R1\.fastq\.gz//' | sort | uniq)
+
+for s in ${SAMPLES}; do
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Mapping $s ..."
+    STAR --runThreadN 24 --genomeDir ${INDEX_DIR} \
+         --readFilesIn ${s}_clean_R1.fastq.gz ${s}_clean_R2.fastq.gz \
+         --readFilesCommand zcat --outFileNamePrefix ${OUT_DIR}/${s}_ \
+         --outSAMtype BAM SortedByCoordinate \
+         --limitBAMsortRAM 60000000000 \
+         --quantMode GeneCounts --outSAMunmapped Within
+done
+
+# 4. 提取表达矩阵
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Generating Count Matrix..."
+paste ${OUT_DIR}/*_ReadsPerGene.out.tab | grep -v "N_" | awk '{printf "%s", $1; for(i=4;i<=NF;i+=4) printf "\t%s", $i; printf "\n"}' > ${MATRIX_DIR}/raw_counts_matrix.txt
+
+echo -n "Gene_ID" > ${MATRIX_DIR}/header.txt
+ls ${OUT_DIR}/*_ReadsPerGene.out.tab | xargs -n 1 basename | sed 's/_ReadsPerGene.out.tab//' | tr '\n' '\t' | awk '{print "\t" $0}' >> ${MATRIX_DIR}/header.txt
+echo "" >> ${MATRIX_DIR}/header.txt
+
+cat ${MATRIX_DIR}/header.txt ${MATRIX_DIR}/raw_counts_matrix.txt > ${MATRIX_DIR}/final_counts.txt
+
+echo "🎉 ALL DONE! Ultimate Matrix saved at ${MATRIX_DIR}/final_counts.txt"
+```
+## 
+
 ## 14_Ultimate_LRT_Engine.R
 ```
 #!/usr/bin/env Rscript
