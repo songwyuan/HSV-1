@@ -1,0 +1,94 @@
+## 14_Ultimate_LRT_Engine.R
+```
+#!/usr/bin/env Rscript
+library(DESeq2)
+library(dplyr)
+
+setwd("/mnt/alamo01/users/yuansongwei7/IDE8-ARG--LGTV_SFTSV/FJLBFC20260490-01/FJLBFC20260490-01/analysis/Strategy4_Mine")
+
+cat("🔄 1. 正在读取表达矩阵并注入 Human Symbol...\n")
+counts <- read.table("../04_counts/final_counts.txt", header=TRUE, row.names=1, check.names=FALSE)
+metadata <- read.csv("../04_counts/sample_info.csv", row.names=1)
+counts <- counts[, rownames(metadata)]
+
+universal_mapping <- read.table("../03_counts/tick_to_human_mapping.txt", header=TRUE, sep="\t", stringsAsFactors=FALSE)
+
+tick_ids <- rownames(counts)
+mapped_symbols <- universal_mapping$Human_Symbol[match(tick_ids, universal_mapping$Tick_ID)]
+final_names <- ifelse(is.na(mapped_symbols) | mapped_symbols == "", tick_ids, mapped_symbols)
+
+dup_counts <- table(final_names)
+dup_names <- names(dup_counts[dup_counts > 1])
+idx_dup <- final_names %in% dup_names
+final_names[idx_dup] <- paste0(final_names[idx_dup], "_", tick_ids[idx_dup])
+rownames(counts) <- final_names
+
+cat("⚙️ 2. 正在构建 DESeq2 LRT 交互模型与分组组合模型...\n")
+metadata$Genotype <- gsub("\\+", "_plus", metadata$Genotype)
+metadata$Genotype <- gsub("-", "_minus", metadata$Genotype)
+metadata$Genotype <- factor(metadata$Genotype, levels = c("Arg_plus", "Arg_minus"))
+metadata$Treatment <- factor(metadata$Treatment, levels = c("mock", "LGTV", "SFTSV"))
+metadata$Group <- factor(paste(metadata$Genotype, metadata$Treatment, sep="_"))
+
+# LRT 模型 (算交互 P-value)
+dds <- DESeqDataSetFromMatrix(countData = counts, colData = metadata, design = ~ Genotype + Treatment + Genotype:Treatment)
+keep <- rowSums(counts(dds) >= 10) >= 3
+dds <- dds[keep,]
+dds_lrt <- DESeq(dds, test="LRT", reduced = ~ Genotype + Treatment)
+
+# Group 模型 (提取特定的 FC)
+dds_group <- DESeqDataSetFromMatrix(countData = counts[keep,], colData = metadata, design = ~ Group)
+dds_group <- DESeq(dds_group)
+
+cat("🛡️ 3. 正在执行【地狱级双重过滤】：病毒FC > 1.5 AND 交互Delta FC > 1.5 ...\n")
+res_lrt <- results(dds_lrt)
+sig_lrt_genes <- rownames(subset(res_lrt, padj < 0.05)) # 基础 LRT 显著
+
+# 提取核心应答 FC (FC 1.5 倍的 log2 阈值是 0.585)
+fc_ap_lgtv <- results(dds_group, contrast=c("Group", "Arg_plus_LGTV", "Arg_plus_mock"))$log2FoldChange
+fc_am_lgtv <- results(dds_group, contrast=c("Group", "Arg_minus_LGTV", "Arg_minus_mock"))$log2FoldChange
+fc_ap_sfts <- results(dds_group, contrast=c("Group", "Arg_plus_SFTSV", "Arg_plus_mock"))$log2FoldChange
+fc_am_sfts <- results(dds_group, contrast=c("Group", "Arg_minus_SFTSV", "Arg_minus_mock"))$log2FoldChange
+
+fc_matrix <- data.frame(
+  row.names = rownames(dds_group),
+  AP_LGTV = fc_ap_lgtv, AM_LGTV = fc_am_lgtv, AP_SFTS = fc_ap_sfts, AM_SFTS = fc_am_sfts
+)
+
+# ----------------- 核心过滤逻辑构建 -----------------
+FC_THRESHOLD <- 0.585  # Log2(1.5) = 0.585
+
+# 卡口 A: 病毒响应大小 (至少在缺 Arg 或有 Arg 的情况下，病毒能引起 1.5 倍变化)
+resp_lgtv <- abs(fc_matrix$AP_LGTV) > FC_THRESHOLD | abs(fc_matrix$AM_LGTV) > FC_THRESHOLD
+resp_sfts <- abs(fc_matrix$AP_SFTS) > FC_THRESHOLD | abs(fc_matrix$AM_SFTS) > FC_THRESHOLD
+
+# 卡口 B: 交互效应大小 (缺 Arg 导致的病毒响应差距，必须大于 1.5 倍)
+delta_lgtv <- abs(fc_matrix$AM_LGTV - fc_matrix$AP_LGTV)
+delta_sfts <- abs(fc_matrix$AM_SFTS - fc_matrix$AP_SFTS)
+
+# 开始提纯！
+# 条件 1: LRT p-value 必须显著 (前面已取 sig_lrt_genes)
+# 条件 2: LGTV 且 SFTSV 都会引起响应 (AND 逻辑)
+# 条件 3: Arg 缺失对两种病毒的干预效应都大于 1.5 倍 (AND 逻辑)
+strict_logic <- (resp_lgtv & resp_sfts) & (delta_lgtv > FC_THRESHOLD & delta_sfts > FC_THRESHOLD)
+
+# 将逻辑掩码应用到全部基因
+valid_genes_overall <- rownames(fc_matrix)[strict_logic]
+
+# 最终取交集：即满足统计学 LRT，又满足绝对 FC
+ultimate_genes <- intersect(sig_lrt_genes, valid_genes_overall)
+
+# ----------------------------------------------------
+
+# 如果要求太高导致基因全军覆没，给出退坡建议
+if(length(ultimate_genes) == 0) {
+  cat("\n⚠️ 警告：地狱级【AND + AND】过滤太过严苛，符合条件的基因数量为 0！\n")
+  cat("建议退坡方案：将病毒要求改为 OR，或交互Delta改为 OR。请直接修改脚本第 55 行的 & 为 | 符号。\n")
+} else {
+  final_res <- res_lrt[ultimate_genes, ]
+  final_res <- final_res[order(final_res$padj), ]
+  write.csv(as.data.frame(final_res), "Strict_Interaction_Targets.csv")
+  saveRDS(dds_lrt, "dds_lrt_model_annotated.rds")
+  cat(sprintf("\n🎉 成功提纯！在【最严苛的 AND 逻辑】下，找到了 %d 个绝世罕见的超级核心靶标！\n", length(ultimate_genes)))
+}
+```
